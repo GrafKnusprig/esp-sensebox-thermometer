@@ -38,6 +38,103 @@ float currentLux = 0.0;
 int pressureTrend = 2; // 0=hard up, 1=slight up, 2=no trend, 3=slight down, 4=hard down
 unsigned long lastTrendUpdate = 0;
 
+// Arrow bitmaps (16x16 pixels each)
+// Each byte represents 8 horizontal pixels, MSB first
+const unsigned char PROGMEM arrow_hard_up[] = {
+  0x01, 0x80, // -------■--------
+  0x03, 0xc0, // ------■■--------
+  0x07, 0xe0, // -----■■■--------
+  0x0f, 0xf0, // ----■■■■--------
+  0x1f, 0xf8, // ---■■■■■--------
+  0x3f, 0xfc, // --■■■■■■--------
+  0x7f, 0xfe, // -■■■■■■■--------
+  0xff, 0xff, // ■■■■■■■■--------
+  0x03, 0xc0, // ------■■--------
+  0x03, 0xc0, // ------■■--------
+  0x03, 0xc0, // ------■■--------
+  0x03, 0xc0, // ------■■--------
+  0x03, 0xc0, // ------■■--------
+  0x03, 0xc0, // ------■■--------
+  0x03, 0xc0, // ------■■--------
+  0x03, 0xc0  // ------■■--------
+};
+
+const unsigned char PROGMEM arrow_slight_up[] = {
+  0x00, 0x01, // --------------■
+  0x00, 0x03, // -------------■■
+  0x00, 0x07, // ------------■■■
+  0x00, 0x0f, // -----------■■■■
+  0x00, 0x1f, // ----------■■■■■
+  0x00, 0x3f, // ---------■■■■■■
+  0x00, 0x7f, // --------■■■■■■■
+  0x00, 0xff, // -------■■■■■■■■
+  0x01, 0xc0, // -------■■■-----
+  0x03, 0x80, // ------■■■------
+  0x07, 0x00, // -----■■■-------
+  0x0e, 0x00, // ----■■■--------
+  0x1c, 0x00, // ---■■■---------
+  0x38, 0x00, // --■■■----------
+  0x70, 0x00, // -■■■-----------
+  0xe0, 0x00  // ■■■------------
+};
+
+const unsigned char PROGMEM arrow_flat[] = {
+  0x00, 0x00, // ----------------
+  0x00, 0x00, // ----------------
+  0x00, 0x00, // ----------------
+  0x00, 0x00, // ----------------
+  0x00, 0x00, // ----------------
+  0x00, 0x01, // --------------■
+  0x00, 0x03, // -------------■■
+  0xff, 0xff, // ■■■■■■■■■■■■■■■■
+  0xff, 0xff, // ■■■■■■■■■■■■■■■■
+  0x00, 0x03, // -------------■■
+  0x00, 0x01, // --------------■
+  0x00, 0x00, // ----------------
+  0x00, 0x00, // ----------------
+  0x00, 0x00, // ----------------
+  0x00, 0x00, // ----------------
+  0x00, 0x00  // ----------------
+};
+
+const unsigned char PROGMEM arrow_slight_down[] = {
+  0xe0, 0x00, // ■■■------------
+  0x70, 0x00, // -■■■-----------
+  0x38, 0x00, // --■■■----------
+  0x1c, 0x00, // ---■■■---------
+  0x0e, 0x00, // ----■■■--------
+  0x07, 0x00, // -----■■■-------
+  0x03, 0x80, // ------■■■------
+  0x01, 0xc0, // -------■■■-----
+  0x00, 0xff, // -------■■■■■■■■
+  0x00, 0x7f, // --------■■■■■■■
+  0x00, 0x3f, // ---------■■■■■■
+  0x00, 0x1f, // ----------■■■■■
+  0x00, 0x0f, // -----------■■■■
+  0x00, 0x07, // ------------■■■
+  0x00, 0x03, // -------------■■
+  0x00, 0x01  // --------------■
+};
+
+const unsigned char PROGMEM arrow_hard_down[] = {
+  0x03, 0xc0, // ------■■--------
+  0x03, 0xc0, // ------■■--------
+  0x03, 0xc0, // ------■■--------
+  0x03, 0xc0, // ------■■--------
+  0x03, 0xc0, // ------■■--------
+  0x03, 0xc0, // ------■■--------
+  0x03, 0xc0, // ------■■--------
+  0x03, 0xc0, // ------■■--------
+  0xff, 0xff, // ■■■■■■■■■■■■■■■■
+  0x7f, 0xfe, // -■■■■■■■■■■■■■■-
+  0x3f, 0xfc, // --■■■■■■■■■■■■--
+  0x1f, 0xf8, // ---■■■■■■■■■■---
+  0x0f, 0xf0, // ----■■■■■■■■----
+  0x07, 0xe0, // -----■■■■■■-----
+  0x03, 0xc0, // ------■■■■------
+  0x01, 0x80  // -------■■-------
+};
+
 void connectWiFi();
 void disconnectWiFi();
 void syncTime();
@@ -268,28 +365,41 @@ void calculatePressureTrend()
   time_t sixHoursAgo = now - (6 * 3600);     // 6 hours ago
   time_t threeHoursAgo = now - (3 * 3600);   // 3 hours ago
 
-  struct tm *tm_now = gmtime(&now);
-  struct tm *tm_12h = gmtime(&twelveHoursAgo);
-  struct tm *tm_6h = gmtime(&sixHoursAgo);
-  struct tm *tm_3h = gmtime(&threeHoursAgo);
+  // Copy the tm structures to avoid overwriting by subsequent gmtime calls
+  struct tm tm_now = *gmtime(&now);
+  struct tm tm_12h = *gmtime(&twelveHoursAgo);
+  struct tm tm_6h = *gmtime(&sixHoursAgo);
+  struct tm tm_3h = *gmtime(&threeHoursAgo);
 
   char time_now[32], time_12h[32], time_6h[32], time_3h[32];
-  strftime(time_now, sizeof(time_now), "%Y-%m-%dT%H:%M:%SZ", tm_now);
-  strftime(time_12h, sizeof(time_12h), "%Y-%m-%dT%H:%M:%SZ", tm_12h);
-  strftime(time_6h, sizeof(time_6h), "%Y-%m-%dT%H:%M:%SZ", tm_6h);
-  strftime(time_3h, sizeof(time_3h), "%Y-%m-%dT%H:%M:%SZ", tm_3h);
+  strftime(time_now, sizeof(time_now), "%Y-%m-%dT%H:%M:%SZ", &tm_now);
+  strftime(time_12h, sizeof(time_12h), "%Y-%m-%dT%H:%M:%SZ", &tm_12h);
+  strftime(time_6h, sizeof(time_6h), "%Y-%m-%dT%H:%M:%SZ", &tm_6h);
+  strftime(time_3h, sizeof(time_3h), "%Y-%m-%dT%H:%M:%SZ", &tm_3h);
 
-  // Use statistics API to get arithmetic means for 3-hour windows
+  // Debug time calculations
+  Serial.print("Current time: ");
+  Serial.println(time_now);
+  Serial.print("12 hours ago: ");
+  Serial.println(time_12h);
+  
+  // Use statistics API to get arithmetic means for 1-hour windows (more data points)
   String url = "/statistics/descriptive?boxId=" + String(OSEM_BOX_ID) + 
                "&phenomenon=Pressure" +
                "&from-date=" + String(time_12h) +
                "&to-date=" + String(time_now) +
                "&operation=arithmeticMean" +
-               "&window=3h" +
+               "&window=1h" +
                "&format=tidy";
   
   Serial.print("Requesting URL: ");
   Serial.println(url);
+  Serial.print("Box ID: ");
+  Serial.println(OSEM_BOX_ID);
+  Serial.print("Time range: ");
+  Serial.print(time_12h);
+  Serial.print(" to ");
+  Serial.println(time_now);
 
   client.print(String("GET ") + url + " HTTP/1.1\r\n" +
                "Host: " + host + "\r\n" +
@@ -345,10 +455,11 @@ void calculatePressureTrend()
   
   // Parse CSV response
   // Expected format: sensorId,time_start,arithmeticMean_3h
-  // Skip non-data lines and process actual data lines
+  // But let's be more flexible and debug what we're actually getting
   
-  float pressureMeans[4] = {0, 0, 0, 0}; // Up to 4 time windows
+  float pressureMeans[15] = {0}; // Increase array size to handle more windows
   int validMeans = 0;
+  int totalLines = 0;
   
   // Split response into lines
   int lineStart = 0;
@@ -361,47 +472,58 @@ void calculatePressureTrend()
       {
         String line = payload.substring(lineStart, i);
         line.trim(); // Remove whitespace and carriage returns
+        totalLines++;
         
-        if (line.length() > 0 && validMeans < 4)
+        Serial.print("Line ");
+        Serial.print(totalLines);
+        Serial.print(": '");
+        Serial.print(line);
+        Serial.println("'");
+        
+        if (line.length() > 0 && validMeans < 15)
         {
-          // Skip obvious non-data lines
-          if (line == "ad" || 
-              line == "0" ||
-              line.startsWith("sensorId,") ||
-              line.indexOf(',') == -1)
+          // Skip obvious header lines but be less restrictive
+          if (line.startsWith("sensorId,") || line == "ad" || line == "0")
           {
-            Serial.print("Skipping non-data line: ");
-            Serial.println(line);
+            Serial.println("  -> Skipping header/empty line");
+          }
+          else if (line.indexOf(',') == -1)
+          {
+            Serial.println("  -> Skipping line without comma");
           }
           else
           {
-            // Parse CSV line: sensorId,time_start,value
+            // Parse CSV line - be more flexible with field count
             int firstComma = line.indexOf(',');
             int secondComma = line.indexOf(',', firstComma + 1);
-            int thirdComma = line.indexOf(',', secondComma + 1);
             
-            // Valid data line should have exactly 3 fields (2 commas)
-            if (firstComma > 0 && secondComma > firstComma && thirdComma == -1)
+            if (firstComma > 0 && secondComma > firstComma)
             {
               String sensorId = line.substring(0, firstComma);
               String timeStart = line.substring(firstComma + 1, secondComma);
-              String valueStr = line.substring(secondComma + 1);
+              
+              // Get value - could be in 3rd field or beyond
+              String remainingPart = line.substring(secondComma + 1);
+              int nextComma = remainingPart.indexOf(',');
+              String valueStr = (nextComma > 0) ? remainingPart.substring(0, nextComma) : remainingPart;
               
               float pressureValue = valueStr.toFloat();
               
-              // Validate: sensor ID should be long hex string, time should contain date format, pressure should be reasonable
-              if (sensorId.length() > 20 && 
-                  timeStart.indexOf('T') > 0 && 
-                  pressureValue > 800 && 
-                  pressureValue < 1200)
+              Serial.print("  -> Parsed: SensorID='");
+              Serial.print(sensorId);
+              Serial.print("' Time='");
+              Serial.print(timeStart);
+              Serial.print("' Value='");
+              Serial.print(valueStr);
+              Serial.print("' (");
+              Serial.print(pressureValue);
+              Serial.println(" hPa)");
+              
+              // More relaxed validation - focus on reasonable pressure values
+              if (pressureValue > 800 && pressureValue < 1200 && sensorId.length() > 10)
               {
-                Serial.print("Valid CSV data - Sensor: ");
-                Serial.print(sensorId);
-                Serial.print(", Time: ");
-                Serial.print(timeStart);
-                Serial.print(", Value: ");
-                Serial.print(pressureValue);
-                Serial.println(" hPa");
+                Serial.print("    -> ACCEPTED as valid measurement #");
+                Serial.println(validMeans + 1);
                 
                 // Store the pressure value
                 pressureMeans[validMeans] = pressureValue;
@@ -409,20 +531,15 @@ void calculatePressureTrend()
               }
               else
               {
-                Serial.print("Invalid data values - Sensor ID len: ");
-                Serial.print(sensorId.length());
-                Serial.print(", Time: ");
-                Serial.print(timeStart);
-                Serial.print(", Pressure: ");
+                Serial.print("    -> REJECTED: pressure=");
                 Serial.print(pressureValue);
-                Serial.print(" - Line: ");
-                Serial.println(line);
+                Serial.print(" (need 800-1200), sensorID len=");
+                Serial.println(sensorId.length());
               }
             }
             else
             {
-              Serial.print("Malformed CSV structure (wrong comma count) - Line: ");
-              Serial.println(line);
+              Serial.println("  -> Malformed CSV structure (not enough commas)");
             }
           }
         }
@@ -430,12 +547,23 @@ void calculatePressureTrend()
       lineStart = i + 1;
     }
   }
+  
+  Serial.print("Total lines processed: ");
+  Serial.print(totalLines);
+  Serial.print(", Valid measurements found: ");
+  Serial.println(validMeans);
 
   if (validMeans < 2)
   {
-    Serial.println("Not enough time windows for trend calculation");
+    Serial.print("Not enough time windows for trend calculation. Found: ");
+    Serial.print(validMeans);
+    Serial.println(" valid data points (need at least 2)");
     return;
   }
+
+  Serial.print("Successfully parsed ");
+  Serial.print(validMeans);
+  Serial.println(" valid pressure measurements");
 
   // Calculate trend based on difference between recent and older pressure means
   // Compare most recent window with oldest available window
@@ -483,44 +611,39 @@ void calculatePressureTrend()
 
 void drawTrendArrow()
 {
-  // Draw arrow in top-left corner (10x10 pixels)
-  int centerX = 10;
-  int centerY = 10;
-  int arrowLength = 8;
+  // Draw 16x16 pixel arrow in top-left corner
+  int x = 2;  // Small margin from edge
+  int y = 2;
 
-  display.drawPixel(centerX, centerY, SSD1306_WHITE); // Center point
-
+  const unsigned char* bitmap = nullptr;
+  
+  // Select the appropriate arrow bitmap
   switch (pressureTrend)
   {
-  case 0: // Hard upward (straight up)
-    display.drawLine(centerX, centerY, centerX, centerY - arrowLength, SSD1306_WHITE);
-    display.drawLine(centerX, centerY - arrowLength, centerX - 2, centerY - arrowLength + 2, SSD1306_WHITE);
-    display.drawLine(centerX, centerY - arrowLength, centerX + 2, centerY - arrowLength + 2, SSD1306_WHITE);
-    break;
-
-  case 1: // Slight upward (45° up)
-    display.drawLine(centerX, centerY, centerX + 6, centerY - 6, SSD1306_WHITE);
-    display.drawLine(centerX + 6, centerY - 6, centerX + 4, centerY - 4, SSD1306_WHITE);
-    display.drawLine(centerX + 6, centerY - 6, centerX + 4, centerY - 8, SSD1306_WHITE);
-    break;
-
-  case 2: // No trend (horizontal)
-    display.drawLine(centerX, centerY, centerX + arrowLength, centerY, SSD1306_WHITE);
-    display.drawLine(centerX + arrowLength, centerY, centerX + arrowLength - 2, centerY - 1, SSD1306_WHITE);
-    display.drawLine(centerX + arrowLength, centerY, centerX + arrowLength - 2, centerY + 1, SSD1306_WHITE);
-    break;
-
-  case 3: // Slight downward (135°)
-    display.drawLine(centerX, centerY, centerX + 6, centerY + 6, SSD1306_WHITE);
-    display.drawLine(centerX + 6, centerY + 6, centerX + 4, centerY + 4, SSD1306_WHITE);
-    display.drawLine(centerX + 6, centerY + 6, centerX + 8, centerY + 4, SSD1306_WHITE);
-    break;
-
-  case 4: // Hard downward (straight down)
-    display.drawLine(centerX, centerY, centerX, centerY + arrowLength, SSD1306_WHITE);
-    display.drawLine(centerX, centerY + arrowLength, centerX - 2, centerY + arrowLength - 2, SSD1306_WHITE);
-    display.drawLine(centerX, centerY + arrowLength, centerX + 2, centerY + arrowLength - 2, SSD1306_WHITE);
-    break;
+    case 0: // Hard upward trend
+      bitmap = arrow_hard_up;
+      break;
+    case 1: // Slight upward trend
+      bitmap = arrow_slight_up;
+      break;
+    case 2: // No trend (flat)
+      bitmap = arrow_flat;
+      break;
+    case 3: // Slight downward trend
+      bitmap = arrow_slight_down;
+      break;
+    case 4: // Hard downward trend
+      bitmap = arrow_hard_down;
+      break;
+    default:
+      bitmap = arrow_flat; // Fallback
+      break;
+  }
+  
+  // Draw the 16x16 bitmap
+  if (bitmap != nullptr)
+  {
+    display.drawBitmap(x, y, bitmap, 16, 16, SSD1306_WHITE);
   }
 }
 
