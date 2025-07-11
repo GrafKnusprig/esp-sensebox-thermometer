@@ -245,7 +245,7 @@ void updateDisplay()
 
 void calculatePressureTrend()
 {
-  Serial.println("Starting pressure trend calculation...");
+  Serial.println("Starting pressure trend calculation using OpenSenseMap statistics API...");
   
   WiFiClientSecure client;
   client.setInsecure(); // Skip certificate verification for simplicity
@@ -262,8 +262,31 @@ void calculatePressureTrend()
   
   Serial.println("Connected to API server");
 
-  // Get pressure data from last 2 days
-  String url = "/boxes/" + String(OSEM_BOX_ID) + "/data/" + String(SENSOR_ID_PRES) + "?format=json";
+  // Get current time for API request
+  time_t now = time(nullptr);
+  time_t twelveHoursAgo = now - (12 * 3600); // 12 hours ago
+  time_t sixHoursAgo = now - (6 * 3600);     // 6 hours ago
+  time_t threeHoursAgo = now - (3 * 3600);   // 3 hours ago
+
+  struct tm *tm_now = gmtime(&now);
+  struct tm *tm_12h = gmtime(&twelveHoursAgo);
+  struct tm *tm_6h = gmtime(&sixHoursAgo);
+  struct tm *tm_3h = gmtime(&threeHoursAgo);
+
+  char time_now[32], time_12h[32], time_6h[32], time_3h[32];
+  strftime(time_now, sizeof(time_now), "%Y-%m-%dT%H:%M:%SZ", tm_now);
+  strftime(time_12h, sizeof(time_12h), "%Y-%m-%dT%H:%M:%SZ", tm_12h);
+  strftime(time_6h, sizeof(time_6h), "%Y-%m-%dT%H:%M:%SZ", tm_6h);
+  strftime(time_3h, sizeof(time_3h), "%Y-%m-%dT%H:%M:%SZ", tm_3h);
+
+  // Use statistics API to get arithmetic means for 3-hour windows
+  String url = "/statistics/descriptive?boxId=" + String(OSEM_BOX_ID) + 
+               "&phenomenon=Pressure" +
+               "&from-date=" + String(time_12h) +
+               "&to-date=" + String(time_now) +
+               "&operation=arithmeticMean" +
+               "&window=3h" +
+               "&format=tidy";
   
   Serial.print("Requesting URL: ");
   Serial.println(url);
@@ -291,8 +314,6 @@ void calculatePressureTrend()
       if (!headersPassed)
       {
         String line = client.readStringUntil('\n');
-        Serial.print("Header: ");
-        Serial.println(line);
         if (line == "\r")
         {
           headersPassed = true;
@@ -301,9 +322,8 @@ void calculatePressureTrend()
       }
       else
       {
-        // Read payload character by character to avoid line break issues
         char c = client.read();
-        if (c > 0) // Valid character
+        if (c > 0)
         {
           payload += c;
         }
@@ -312,175 +332,139 @@ void calculatePressureTrend()
   }
   client.stop();
   
-  Serial.print("Payload received length: ");
+  Serial.print("Statistics API Response length: ");
   Serial.println(payload.length());
+  Serial.println("CSV Response:");
+  Serial.println(payload);
 
   if (payload.length() == 0)
   {
-    Serial.println("No pressure data received");
+    Serial.println("No statistics data received");
     return;
   }
   
-  // Clean up payload - remove any chunked encoding artifacts
-  // Remove chunked encoding length markers (hex numbers on separate lines)
-  String cleanedPayload = "";
-  bool inChunkSize = false;
+  // Parse CSV response
+  // Expected format: sensorId,time_start,arithmeticMean_3h
+  // Skip non-data lines and process actual data lines
   
-  for (unsigned int i = 0; i < payload.length(); i++)
+  float pressureMeans[4] = {0, 0, 0, 0}; // Up to 4 time windows
+  int validMeans = 0;
+  
+  // Split response into lines
+  int lineStart = 0;
+  
+  for (unsigned int i = 0; i <= payload.length(); i++)
   {
-    char c = payload.charAt(i);
-    
-    // Skip chunked encoding size markers (hex digits followed by \r\n)
-    if (c == '\r' || c == '\n')
+    if (i == payload.length() || payload.charAt(i) == '\n')
     {
-      inChunkSize = false;
-      continue;
-    }
-    
-    // Check if we're at the start of a chunk size (hex digits)
-    if (!inChunkSize && ((c >= '0' && c <= '9') || (c >= 'a' && c <= 'f') || (c >= 'A' && c <= 'F')))
-    {
-      // Look ahead to see if this is a chunk size line
-      unsigned int endPos = i;
-      while (endPos < payload.length() && payload.charAt(endPos) != '\r' && payload.charAt(endPos) != '\n')
+      if (i > lineStart)
       {
-        endPos++;
-      }
-      
-      // If the line only contains hex digits, it's likely a chunk size
-      bool isChunkSize = true;
-      for (unsigned int j = i; j < endPos; j++)
-      {
-        char ch = payload.charAt(j);
-        if (!((ch >= '0' && ch <= '9') || (ch >= 'a' && ch <= 'f') || (ch >= 'A' && ch <= 'F')))
+        String line = payload.substring(lineStart, i);
+        line.trim(); // Remove whitespace and carriage returns
+        
+        if (line.length() > 0 && validMeans < 4)
         {
-          isChunkSize = false;
-          break;
+          // Skip obvious non-data lines
+          if (line == "ad" || 
+              line == "0" ||
+              line.startsWith("sensorId,") ||
+              line.indexOf(',') == -1)
+          {
+            Serial.print("Skipping non-data line: ");
+            Serial.println(line);
+          }
+          else
+          {
+            // Parse CSV line: sensorId,time_start,value
+            int firstComma = line.indexOf(',');
+            int secondComma = line.indexOf(',', firstComma + 1);
+            int thirdComma = line.indexOf(',', secondComma + 1);
+            
+            // Valid data line should have exactly 3 fields (2 commas)
+            if (firstComma > 0 && secondComma > firstComma && thirdComma == -1)
+            {
+              String sensorId = line.substring(0, firstComma);
+              String timeStart = line.substring(firstComma + 1, secondComma);
+              String valueStr = line.substring(secondComma + 1);
+              
+              float pressureValue = valueStr.toFloat();
+              
+              // Validate: sensor ID should be long hex string, time should contain date format, pressure should be reasonable
+              if (sensorId.length() > 20 && 
+                  timeStart.indexOf('T') > 0 && 
+                  pressureValue > 800 && 
+                  pressureValue < 1200)
+              {
+                Serial.print("Valid CSV data - Sensor: ");
+                Serial.print(sensorId);
+                Serial.print(", Time: ");
+                Serial.print(timeStart);
+                Serial.print(", Value: ");
+                Serial.print(pressureValue);
+                Serial.println(" hPa");
+                
+                // Store the pressure value
+                pressureMeans[validMeans] = pressureValue;
+                validMeans++;
+              }
+              else
+              {
+                Serial.print("Invalid data values - Sensor ID len: ");
+                Serial.print(sensorId.length());
+                Serial.print(", Time: ");
+                Serial.print(timeStart);
+                Serial.print(", Pressure: ");
+                Serial.print(pressureValue);
+                Serial.print(" - Line: ");
+                Serial.println(line);
+              }
+            }
+            else
+            {
+              Serial.print("Malformed CSV structure (wrong comma count) - Line: ");
+              Serial.println(line);
+            }
+          }
         }
       }
-      
-      if (isChunkSize && (endPos - i) <= 4) // Chunk sizes are typically short
-      {
-        inChunkSize = true;
-        i = endPos - 1; // Skip to end of chunk size line
-        continue;
-      }
-    }
-    
-    if (!inChunkSize)
-    {
-      cleanedPayload += c;
+      lineStart = i + 1;
     }
   }
-  
-  payload = cleanedPayload;
-  
-  // Find the start of JSON array
-  int jsonStart = payload.indexOf('[');
-  if (jsonStart > 0)
+
+  if (validMeans < 2)
   {
-    payload = payload.substring(jsonStart);
-    Serial.println("Cleaned JSON starting from '[' character");
-  }
-  
-  // Find the end of JSON array and remove any trailing data
-  int jsonEnd = payload.lastIndexOf(']');
-  if (jsonEnd > 0 && jsonEnd < (int)payload.length() - 1)
-  {
-    payload = payload.substring(0, jsonEnd + 1);
-    Serial.println("Cleaned JSON ending at ']' character");
-  }
-  
-  Serial.print("Cleaned API Response length: ");
-  Serial.println(payload.length());
-  Serial.println("First 500 chars of cleaned response:");
-  Serial.println(payload.substring(0, 500));  // Parse JSON and calculate trend
-  JsonDocument doc;
-  DeserializationError error = deserializeJson(doc, payload);
-  
-  if (error)
-  {
-    Serial.print("JSON parsing failed: ");
-    Serial.println(error.c_str());
+    Serial.println("Not enough time windows for trend calculation");
     return;
   }
 
-  JsonArray measurements = doc.as<JsonArray>();
-  int numMeasurements = measurements.size();
+  // Calculate trend based on difference between recent and older pressure means
+  // Compare most recent window with oldest available window
+  float recentPressure = pressureMeans[validMeans - 1]; // Most recent
+  float olderPressure = pressureMeans[0]; // Oldest
+  float pressureDiff = recentPressure - olderPressure;
 
-  if (numMeasurements < 10)
-  {
-    Serial.println("Not enough data for trend calculation");
-    return;
-  }
+  Serial.print("Pressure difference (recent - old): ");
+  Serial.print(pressureDiff);
+  Serial.println(" hPa");
 
-  // Use last 20 measurements for trend calculation
-  int dataPoints = min(20, numMeasurements);
-  float pressureValues[20];
-  float timeValues[20];
-
-  // Extract pressure values - API returns newest first, so we need to reverse
-  // Take the oldest measurements for trend calculation
-  for (int i = 0; i < dataPoints; i++)
-  {
-    // OpenSenseMap returns data newest first, so reverse to get oldest first
-    JsonObject measurement = measurements[numMeasurements - 1 - i];
-    pressureValues[i] = measurement["value"].as<float>();
-
-    // Use index as time (measurements are now chronological from oldest to newest)
-    timeValues[i] = i;
-    
-    Serial.print("Data point ");
-    Serial.print(i);
-    Serial.print(" (time order): ");
-    Serial.print(pressureValues[i]);
-    Serial.println(" hPa");
-  }  // Calculate linear regression slope
-  float sumX = 0, sumY = 0, sumXY = 0, sumX2 = 0;
-  
-  for (int i = 0; i < dataPoints; i++)
-  {
-    sumX += timeValues[i];
-    sumY += pressureValues[i];
-    sumXY += timeValues[i] * pressureValues[i];
-    sumX2 += timeValues[i] * timeValues[i];
-  }
-  
-  float denominator = dataPoints * sumX2 - sumX * sumX;
-  if (abs(denominator) < 0.0001)
-  {
-    Serial.println("Cannot calculate trend - insufficient variance");
-    return;
-  }
-  
-  float slope = (dataPoints * sumXY - sumX * sumY) / denominator;
-
-  // Convert slope to trend categories
-  // Slope is in hPa per measurement interval (typically 10 minutes)
-  // Scale to hPa per hour for interpretation
-  float slopePerHour = slope * 6; // 6 measurements per hour (assuming 10-min intervals)
-
-  Serial.print("Raw slope: ");
-  Serial.print(slope, 6);
-  Serial.print(" hPa/interval, Slope per hour: ");
-  Serial.println(slopePerHour, 3);
-
-  if (slopePerHour > 0.3)
+  // Convert to trend categories based on pressure difference over time
+  // Thresholds based on typical barometric pressure change rates
+  if (pressureDiff > 1.5)
   {
     pressureTrend = 0; // Hard upward trend
     Serial.println("-> Hard upward trend");
   }
-  else if (slopePerHour > 0.1)
+  else if (pressureDiff > 0.5)
   {
     pressureTrend = 1; // Slight upward trend
     Serial.println("-> Slight upward trend");
   }
-  else if (slopePerHour > -0.1)
+  else if (pressureDiff > -0.5)
   {
     pressureTrend = 2; // No significant trend
     Serial.println("-> No significant trend");
   }
-  else if (slopePerHour > -0.3)
+  else if (pressureDiff > -1.5)
   {
     pressureTrend = 3; // Slight downward trend
     Serial.println("-> Slight downward trend");
@@ -492,18 +476,9 @@ void calculatePressureTrend()
   }
 
   Serial.print("Pressure trend calculated: ");
-  Serial.print(slopePerHour);
-  Serial.print(" hPa/hour, category: ");
+  Serial.print(pressureDiff);
+  Serial.print(" hPa difference, category: ");
   Serial.println(pressureTrend);
-  
-  // Debug: Print first and last pressure values (oldest to newest)
-  Serial.print("Pressure range (oldest to newest): ");
-  Serial.print(pressureValues[0]);
-  Serial.print(" -> ");
-  Serial.print(pressureValues[dataPoints - 1]);
-  Serial.print(" hPa over ");
-  Serial.print(dataPoints);
-  Serial.println(" measurements");
 }
 
 void drawTrendArrow()
