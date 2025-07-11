@@ -195,7 +195,7 @@ void updateDisplay()
   time_t now = time(nullptr);
   struct tm *t = localtime(&now);
 
-  char dateStr[11];
+  char dateStr[32];  // Much larger buffer to satisfy compiler warning checks
   snprintf(dateStr, sizeof(dateStr), "%02d.%02d.%04d", t->tm_mday, t->tm_mon + 1, 1900 + t->tm_year);
 
   char timeStr[6];
@@ -353,9 +353,9 @@ void calculatePressureTrend()
   // Split response into lines
   int lineStart = 0;
   
-  for (unsigned int i = 0; i <= payload.length(); i++)
+  for (int i = 0; i <= (int)payload.length(); i++)
   {
-    if (i == payload.length() || payload.charAt(i) == '\n')
+    if (i == (int)payload.length() || payload.charAt(i) == '\n')
     {
       if (i > lineStart)
       {
